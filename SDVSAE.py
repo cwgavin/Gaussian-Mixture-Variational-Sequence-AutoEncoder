@@ -1,15 +1,18 @@
 import os
 import sys
-sys.path.append("../")
+# sys.path.append("../")
 
 import time
 import argparse
 import numpy as np
-import tensorflow as tf
+# import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from data_generator import DataGenerator
 
 from sklearn.metrics import precision_recall_curve, auc
 from sklearn.cluster import KMeans
+
+tf.disable_eager_execution()
 
 
 def auc_score(y_true, y_score):

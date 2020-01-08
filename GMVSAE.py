@@ -1,19 +1,20 @@
 import os
 import sys
-sys.path.append("../")
+# sys.path.append("../")
 
 import math
 import time
 import argparse
 import numpy as np
-import tensorflow as tf
+# import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from data_generator import DataGenerator
 
 from sklearn.metrics import precision_recall_curve, auc
 from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
 
-
+tf.disable_eager_execution()
 def auc_score(y_true, y_score):
     precision, recall, _ = precision_recall_curve(1-y_true, 1-y_score)
     return auc(recall, precision)
