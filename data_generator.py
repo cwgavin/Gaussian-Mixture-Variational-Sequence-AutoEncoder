@@ -10,7 +10,7 @@ from collections import defaultdict
 def pad_and_mask(batch_x):
     max_len = max(len(x) for x in batch_x)
     batch_mask = [[1] * len(x) + [0] * (max_len - len(x)) for x in batch_x]
-    batch_x = [x + [0] * (max_len - len(x)) for x in batch_x]
+    batch_x = [x + [0] * (max_len - len(x)) for x in batch_x]  # use 0 to pad shorter trajs (since length varies)
     return batch_x, batch_mask
 
 

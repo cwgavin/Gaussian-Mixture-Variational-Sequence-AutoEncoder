@@ -8,6 +8,7 @@ import argparse
 import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
+from utils import *
 from data_generator import DataGenerator
 
 from sklearn.metrics import precision_recall_curve, auc
@@ -15,56 +16,6 @@ from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
 
 tf.disable_eager_execution()
-def auc_score(y_true, y_score):
-    precision, recall, _ = precision_recall_curve(1-y_true, 1-y_score)
-    return auc(recall, precision)
-
-
-def filling_batch(batch_data):
-    new_batch_data = []
-    last_batch_size = len(batch_data[0])
-    for b in batch_data:
-        new_batch_data.append(
-            np.concatenate([b, [np.zeros_like(b[0]).tolist()
-                                for _ in range(args.batch_size - last_batch_size)]], axis=0))
-    return new_batch_data
-
-
-def compute_likelihood(sess, model, sampler, purpose):
-    all_likelihood = []
-    for batch_data in sampler.iterate_all_data(args.batch_size,
-                                               partial_ratio=args.partial_ratio,
-                                               purpose=purpose):
-        if len(batch_data[0]) < args.batch_size:
-            last_batch_size = len(batch_data[0])
-            batch_data = filling_batch(batch_data)
-            feed = dict(zip(model.input_form, batch_data))
-            batch_likelihood = sess.run(model.batch_likelihood, feed)[:last_batch_size]
-        else:
-            feed = dict(zip(model.input_form, batch_data))
-            batch_likelihood = sess.run(model.batch_likelihood, feed)
-        all_likelihood.append(batch_likelihood)
-    return np.concatenate(all_likelihood)
-
-
-def compute_loss(sess, model, sampler, purpose):
-    all_loss = []
-    if args.pt:
-        loss_op = model.pretrain_loss
-    else:
-        loss_op = model.loss
-    for batch_data in sampler.iterate_all_data(args.batch_size,
-                                               partial_ratio=args.partial_ratio,
-                                               purpose=purpose):
-        if len(batch_data[0]) < args.batch_size:
-            batch_data = filling_batch(batch_data)
-            feed = dict(zip(model.input_form, batch_data))
-            loss = sess.run(loss_op, feed)
-        else:
-            feed = dict(zip(model.input_form, batch_data))
-            loss = sess.run(loss_op, feed)
-        all_loss.append(loss)
-    return np.mean(all_loss)
 
 
 class Model:
@@ -96,6 +47,7 @@ class Model:
             )
 
         with tf.variable_scope("clusters"):
+            # mem_num = size of sd memory = 5
             mu_c = tf.get_variable("mu_c", [args.mem_num, args.rnn_size],
                                    initializer=tf.random_uniform_initializer(0.0, 1.0))
             log_sigma_sq_c = tf.get_variable("sigma_sq_c", [args.mem_num, args.rnn_size],
@@ -231,7 +183,7 @@ def pretrain():
                 feed = dict(zip(model.input_form, batch_data))
                 sess.run(model.pretrain_op, feed)
 
-            val_loss = compute_loss(sess, model, sampler, "val")
+            val_loss = compute_loss(sess, model, sampler, "val", args)
             if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
                 print("Early termination with val loss: {}:".format(val_loss))
                 break
@@ -296,7 +248,7 @@ def train():
                     [model.rec_loss, model.cate_loss, model.latent_loss, model.train_op], feed)
                 all_loss.append([rec_loss, cate_loss, latent_loss])
 
-            val_loss = compute_loss(sess, model, sampler, "val")
+            val_loss = compute_loss(sess, model, sampler, "val", args)
             if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
                 print("Early termination with val loss: {}:".format(val_loss))
                 break
@@ -325,7 +277,7 @@ def evaluate():
         model.restore(sess, model_name)
 
         st = time.time()
-        all_likelihood = compute_likelihood(sess, model, sampler, "train")
+        all_likelihood = compute_likelihood(sess, model, sampler, "train", args)
         elapsed = time.time() - st
 
         all_prob = np.exp(all_likelihood)

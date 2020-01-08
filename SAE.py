@@ -7,57 +7,11 @@ import argparse
 import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
+from utils import *
 from data_generator import DataGenerator
-
 from sklearn.metrics import precision_recall_curve, auc
 
 tf.disable_eager_execution()
-def auc_score(y_true, y_score):
-    precision, recall, _ = precision_recall_curve(1-y_true, 1-y_score)
-    return auc(recall, precision)
-
-
-def filling_batch(batch_data):
-    new_batch_data = []
-    last_batch_size = len(batch_data[0])
-    for b in batch_data:
-        new_batch_data.append(
-            np.concatenate([b, [np.zeros_like(b[0]).tolist()
-                                for _ in range(args.batch_size - last_batch_size)]], axis=0))
-    return new_batch_data
-
-
-def compute_likelihood(sess, model, sampler, purpose):
-    all_likelihood = []
-    for batch_data in sampler.iterate_all_data(args.batch_size,
-                                               partial_ratio=args.partial_ratio,
-                                               purpose=purpose):
-        if len(batch_data[0]) < args.batch_size:
-            last_batch_size = len(batch_data[0])
-            batch_data = filling_batch(batch_data)
-            feed = dict(zip(model.input_form, batch_data))
-            batch_likelihood = sess.run(model.batch_likelihood, feed)[:last_batch_size]
-        else:
-            feed = dict(zip(model.input_form, batch_data))
-            batch_likelihood = sess.run(model.batch_likelihood, feed)
-        all_likelihood.append(batch_likelihood)
-    return np.concatenate(all_likelihood)
-
-
-def compute_loss(sess, model, sampler, purpose):
-    all_loss = []
-    for batch_data in sampler.iterate_all_data(args.batch_size,
-                                               partial_ratio=args.partial_ratio,
-                                               purpose=purpose):
-        if len(batch_data[0]) < args.batch_size:
-            batch_data = filling_batch(batch_data)
-            feed = dict(zip(model.input_form, batch_data))
-            loss = sess.run(model.loss, feed)
-        else:
-            feed = dict(zip(model.input_form, batch_data))
-            loss = sess.run(model.loss, feed)
-        all_loss.append(loss)
-    return np.mean(all_loss)
 
 
 class Model:
@@ -150,7 +104,7 @@ def train():
                 loss, _ = sess.run([model.loss, model.train_op], feed)
                 all_loss.append(loss)
 
-            val_loss = compute_loss(sess, model, sampler, "val")
+            val_loss = compute_loss(sess, model, sampler, "val", args)
 
             if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
                 print("Early termination with val loss: {}:".format(val_loss))

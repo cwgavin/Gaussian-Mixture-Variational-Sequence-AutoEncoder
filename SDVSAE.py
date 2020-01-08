@@ -15,21 +15,6 @@ from sklearn.cluster import KMeans
 tf.disable_eager_execution()
 
 
-def auc_score(y_true, y_score):
-    precision, recall, _ = precision_recall_curve(1-y_true, 1-y_score)
-    return auc(recall, precision)
-
-
-def filling_batch(batch_data):
-    new_batch_data = []
-    last_batch_size = len(batch_data[0])
-    for b in batch_data:
-        new_batch_data.append(
-            np.concatenate([b, [np.zeros_like(b[0]).tolist()
-                                for _ in range(args.batch_size - last_batch_size)]], axis=0))
-    return new_batch_data
-
-
 def compute_output(output_type, sess, model, sampler, purpose, callback):
     all_output = []
     for batch_data, batch_sd in sampler.iterate_all_data(args.batch_size,
@@ -38,7 +23,7 @@ def compute_output(output_type, sess, model, sampler, purpose, callback):
         batch_s, batch_d = batch_sd
         if len(batch_data[0]) < args.batch_size:
             last_batch_size = len(batch_data[0])
-            batch_data = filling_batch(batch_data)
+            batch_data = filling_batch(batch_data, args)
             feed = dict(zip(model.input_form, batch_data))
             feed[model.s_inputs] = batch_s + [0] * (args.batch_size - last_batch_size)
             feed[model.d_inputs] = batch_d + [0] * (args.batch_size - last_batch_size)

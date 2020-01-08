@@ -7,94 +7,64 @@ import argparse
 import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
+from utils import *
 from data_generator import DataGenerator
-
 from sklearn.metrics import precision_recall_curve, auc
 
 tf.disable_eager_execution()
-def auc_score(y_true, y_score):
-    precision, recall, _ = precision_recall_curve(1-y_true, 1-y_score)
-    return auc(recall, precision)
-
-
-def filling_batch(batch_data):
-    new_batch_data = []
-    last_batch_size = len(batch_data[0])
-    for b in batch_data:
-        new_batch_data.append(
-            np.concatenate([b, [np.zeros_like(b[0]).tolist()
-                                for _ in range(args.batch_size - last_batch_size)]], axis=0))
-    return new_batch_data
-
-
-def compute_likelihood(sess, model, sampler, purpose):
-    all_likelihood = []
-    for batch_data in sampler.iterate_all_data(args.batch_size,
-                                               partial_ratio=args.partial_ratio,
-                                               purpose=purpose):
-        if len(batch_data[0]) < args.batch_size:
-            last_batch_size = len(batch_data[0])
-            batch_data = filling_batch(batch_data)
-            feed = dict(zip(model.input_form, batch_data))
-            batch_likelihood = sess.run(model.batch_likelihood, feed)[:last_batch_size]
-        else:
-            feed = dict(zip(model.input_form, batch_data))
-            batch_likelihood = sess.run(model.batch_likelihood, feed)
-        all_likelihood.append(batch_likelihood)
-    return np.concatenate(all_likelihood)
-
-
-def compute_loss(sess, model, sampler, purpose):
-    all_loss = []
-    for batch_data in sampler.iterate_all_data(args.batch_size,
-                                               partial_ratio=args.partial_ratio,
-                                               purpose=purpose):
-        if len(batch_data[0]) < args.batch_size:
-            batch_data = filling_batch(batch_data)
-            feed = dict(zip(model.input_form, batch_data))
-            loss = sess.run(model.loss, feed)
-        else:
-            feed = dict(zip(model.input_form, batch_data))
-            loss = sess.run(model.loss, feed)
-        all_loss.append(loss)
-    return np.mean(all_loss)
 
 
 class Model:
     def __init__(self, args):
+        # inputs/mask.shape=(128, None)  'None' in shape means any number  seq_length.shape=(128,)
         inputs = tf.placeholder(shape=(args.batch_size, None), dtype=tf.int32, name='inputs')
         mask = tf.placeholder(shape=(args.batch_size, None), dtype=tf.float32, name='inputs_mask')
         seq_length = tf.placeholder(shape=args.batch_size, dtype=tf.float32, name='seq_length')
 
         self.input_form = [inputs, mask, seq_length]
 
+        # all shape=(128, None)
         encoder_inputs = inputs
         decoder_inputs = tf.concat([tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32), inputs], axis=1)
         decoder_targets = tf.concat([inputs, tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32)], axis=1)
         decoder_mask = tf.concat([mask, tf.zeros(shape=(args.batch_size, 1), dtype=tf.float32)], axis=1)
 
+        # map size
         x_size = out_size = args.map_size[0] * args.map_size[1]
+        # embeddings.shape=(16900, 32)  tf.random_uniform(shape, minval=0, maxval=None, ...)
+        # x_latent_size is the input embedding size = 32
         embeddings = tf.Variable(tf.random_uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        # tf.nn.embedding_lookup(params, ids, ...)  Looks up ids in a list of embedding tensors.
+        # shape=(128, None, 32)
         encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, encoder_inputs)
         decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
 
         with tf.variable_scope("encoder"):
+            # create a GRUCell  output_size = state_size = 256
             encoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
+
+            # tf.compat.v1.nn.dynamic_rnn(cell, inputs, ...) = keras.layers.RNN(cell)
+            # returns (outputs, state)
+            # 'outputs' is a tensor of shape [batch_size, max_time, cell_output_size]
+            # 'state' is a tensor of shape [batch_size, cell_state_size] = (128, 256)
             _, encoder_final_state = tf.nn.dynamic_rnn(
                 encoder_cell, encoder_inputs_embedded,
                 sequence_length=seq_length,
                 dtype=tf.float32,
             )
 
+        # tf.compat.v1.get_variable(name, shape=None, dtype=None,
+        #                           initializer=None, ...)
         mu_w = tf.get_variable("mu_w", [args.rnn_size, args.rnn_size], tf.float32,
                                tf.random_normal_initializer(stddev=0.02))
         mu_b = tf.get_variable("mu_b", [args.rnn_size], tf.float32,
-                               initializer=tf.constant_initializer(0.0))
+                               tf.constant_initializer(0.0))
         sigma_w = tf.get_variable("sigma_w", [args.rnn_size, args.rnn_size], tf.float32,
                                   tf.random_normal_initializer(stddev=0.02))
         sigma_b = tf.get_variable("sigma_b", [args.rnn_size], tf.float32,
-                                  initializer=tf.constant_initializer(0.0))
+                                  tf.constant_initializer(0.0))
 
+        # all shape=(128, 256)
         mu = tf.matmul(encoder_final_state, mu_w) + mu_b
         log_sigma_sq = tf.matmul(encoder_final_state, sigma_w) + sigma_b
         eps = tf.random_normal(shape=tf.shape(log_sigma_sq), mean=0, stddev=1, dtype=tf.float32)
@@ -102,6 +72,7 @@ class Model:
         if args.eval:
             z = tf.zeros(shape=(args.batch_size, args.rnn_size), dtype=tf.float32)
         else:
+            # Re-parameterization trick
             z = mu + tf.sqrt(tf.exp(log_sigma_sq)) * eps
 
         self.batch_post_embedded = z
@@ -116,10 +87,14 @@ class Model:
                 dtype=tf.float32,
             )
 
+        # out_size = 16900
         out_w = tf.get_variable("out_w", [out_size, args.rnn_size], tf.float32,
                                 tf.random_normal_initializer(stddev=0.02))
         out_b = tf.get_variable("out_b", [out_size], tf.float32,
-                                initializer=tf.constant_initializer(0.0))
+                                tf.constant_initializer(0.0))
+        # tf.reduce_mean(input_tensor, axis=None, ...)  Reduces input_tensor to mean value along the given axis.
+        # tf.reshape(tensor, shape, name=None)  Reshape the tensor into given shape, -1 indicates calculated value.
+        # tf.nn.sampled_softmax_loss()  A fast way to train softmax classifier, usually an underestimate (for training only).
         batch_rec_loss = tf.reduce_mean(
             decoder_mask * tf.reshape(
                 tf.nn.sampled_softmax_loss(
@@ -130,7 +105,7 @@ class Model:
                     num_sampled=args.neg_size,
                     num_classes=out_size
                 ), [args.batch_size, -1]
-            ), axis=-1
+            ), axis=-1  # reduce to mean along the last dimension
         )
         batch_latent_loss = -0.5 * tf.reduce_sum(1 + log_sigma_sq - tf.square(mu) - tf.exp(log_sigma_sq), axis=1)
 
@@ -148,6 +123,7 @@ class Model:
                 tf.reduce_sum(decoder_outputs * target_out_w, -1) + target_out_b
             ), axis=-1, name="batch_likelihood")
 
+        # save/restore variables to/from checkpoints, max_to_keep = max #recent checkpoint files to keep.
         saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES), max_to_keep=10)
         self.save, self.restore = saver.save, saver.restore
 
@@ -164,14 +140,14 @@ def train():
             all_loss = []
             # sampler.spatial_augmentation()
             for batch_idx in range(int(sampler.total_traj_num / args.batch_size)):
-                batch_data = sampler.next_batch(args.batch_size)
+                batch_data = sampler.next_batch(args.batch_size)  # [batch_x, batch_mask, batch_seq_length]
                 feed = dict(zip(model.input_form, batch_data))
 
                 rec_loss, latent_loss, _ = sess.run(
                     [model.rec_loss, model.latent_loss, model.train_op], feed)
                 all_loss.append([rec_loss, latent_loss])
 
-            val_loss = compute_loss(sess, model, sampler, "val")
+            val_loss = compute_loss(sess, model, sampler, "val", args)
             if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
                 print("Early termination with val loss: {}:".format(val_loss))
                 break
@@ -200,7 +176,7 @@ def evaluate():
         model.restore(sess, model_name)
 
         st = time.time()
-        all_likelihood = compute_likelihood(sess, model, sampler, "train")
+        all_likelihood = compute_likelihood(sess, model, sampler, "train", args)
         elapsed = time.time() - st
 
         all_prob = np.exp(all_likelihood)
@@ -230,7 +206,7 @@ def evaluate():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_filename', type=str, default="../data/processed_beijing{}.csv",
+    parser.add_argument('--data_filename', type=str, default="./data/processed_beijing{}.csv",
                         help='data file')
     parser.add_argument('--map_size', type=tuple, default=(130, 130),
                         help='size of map')
