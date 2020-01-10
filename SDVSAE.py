@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
+from utils import *
 from data_generator import DataGenerator
 
 from sklearn.metrics import precision_recall_curve, auc
@@ -361,7 +362,7 @@ if __name__ == '__main__':
     # parser.add_argument('--map_size', type=tuple, default=(130, 130),
     #                     help='size of map')
 
-    parser.add_argument('--model_type', type=str, default="",
+    parser.add_argument('--model_type', type=str, default="sd",
                         help='choose a model')
 
     parser.add_argument('--x_latent_size', type=int, default=32,

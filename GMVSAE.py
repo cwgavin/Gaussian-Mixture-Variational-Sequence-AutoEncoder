@@ -40,6 +40,9 @@ class Model:
 
         with tf.variable_scope("encoder"):
             encoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
+            # tf.nn.dynamic_rnn returns (outputs, state)
+            # 'outputs' is a tensor of shape [batch_size, max_time, cell_output_size]
+            # 'state' is a tensor of shape [batch_size, cell_state_size] = (128, 256)
             _, encoder_final_state = tf.nn.dynamic_rnn(
                 encoder_cell, encoder_inputs_embedded,
                 sequence_length=seq_length,
@@ -47,7 +50,7 @@ class Model:
             )
 
         with tf.variable_scope("clusters"):
-            # mem_num = size of sd memory = 5
+            # mem_num = size of sd memory = 5, rnn_size = 256
             mu_c = tf.get_variable("mu_c", [args.mem_num, args.rnn_size],
                                    initializer=tf.random_uniform_initializer(0.0, 1.0))
             log_sigma_sq_c = tf.get_variable("sigma_sq_c", [args.mem_num, args.rnn_size],
@@ -61,6 +64,7 @@ class Model:
             init_pi = tf.placeholder(shape=args.mem_num, dtype=tf.float32, name='init_pi')
             self.cluster_init = [init_mu_c, init_sigma_c, init_pi]
 
+            # tf.compat.v1.assign(ref, value, ...)
             self.init_mu_c_op = tf.assign(mu_c, init_mu_c)
             self.init_sigma_c_op = tf.assign(log_sigma_sq_c, init_sigma_c)
             self.init_pi_op = tf.assign(log_pi_prior, init_pi)
@@ -69,6 +73,7 @@ class Model:
             self.sigma_c = log_sigma_sq_c
             self.pi = pi_prior
 
+            # shape=(128, 5, 256)
             stack_mu_c = tf.stack([mu_c] * args.batch_size, axis=0)
             stack_log_sigma_sq_c = tf.stack([log_sigma_sq_c] * args.batch_size, axis=0)
 
@@ -86,9 +91,11 @@ class Model:
                                             initializer=tf.constant_initializer(0.0))
                 log_sigma_sq_z = tf.matmul(encoder_final_state, sigma_z_w) + sigma_z_b
 
+            # shape = (128, 256)
             eps_z = tf.random_normal(shape=tf.shape(log_sigma_sq_z), mean=0, stddev=1, dtype=tf.float32)
             z = mu_z + tf.sqrt(tf.exp(log_sigma_sq_z)) * eps_z
 
+            # shape = (128, 5, 256)  5 clusters
             stack_mu_z = tf.stack([mu_z] * args.mem_num, axis=1)
             stack_log_sigma_sq_z = tf.stack([log_sigma_sq_z] * args.mem_num, axis=1)
             stack_z = tf.stack([z] * args.mem_num, axis=1)
@@ -96,6 +103,7 @@ class Model:
             self.batch_post_embedded = z
 
         with tf.variable_scope("attention"):
+            # att_logits/att.shape = (128, 5)
             att_logits = - tf.reduce_sum(tf.square(stack_z - stack_mu_c) / tf.exp(stack_log_sigma_sq_c), axis=-1)
             att = tf.nn.softmax(att_logits) + 1e-10
             self.batch_att = att
@@ -105,6 +113,9 @@ class Model:
                 with tf.variable_scope("decoder"):
                     decoder_init_state = h
                     decoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
+                    # tf.nn.dynamic_rnn returns (outputs, state)
+                    # 'outputs' is a tensor of shape [batch_size, max_time, cell_output_size] = (128, None, 256)
+                    # 'state' is a tensor of shape [batch_size, cell_state_size]
                     decoder_outputs, _ = tf.nn.dynamic_rnn(
                         decoder_cell, decoder_inputs_embedded,
                         initial_state=decoder_init_state,
@@ -112,11 +123,14 @@ class Model:
                         dtype=tf.float32,
                     )
                 with tf.variable_scope("outputs"):
+                    # out_w.shape = (16900, 256)
                     out_w = tf.get_variable("out_w", [out_size, args.rnn_size], tf.float32,
                                             tf.random_normal_initializer(stddev=0.02))
                     out_b = tf.get_variable("out_b", [out_size], tf.float32,
                                             initializer=tf.constant_initializer(0.0))
 
+                    # batch_rec_loss.shape=(128,)  decoder_mask.shape=(128, None)
+                    # decoder_targets.shape=(128, None)  decoder_outputs.shape=(128, None, 256)
                     batch_rec_loss = tf.reduce_mean(
                         decoder_mask * tf.reshape(
                             tf.nn.sampled_softmax_loss(
@@ -129,8 +143,10 @@ class Model:
                             ), [args.batch_size, -1]
                         ), axis=-1
                     )
-                    target_out_w = tf.nn.embedding_lookup(out_w, decoder_targets)
-                    target_out_b = tf.nn.embedding_lookup(out_b, decoder_targets)
+                    target_out_w = tf.nn.embedding_lookup(out_w, decoder_targets)  # (128, None, 256)
+                    target_out_b = tf.nn.embedding_lookup(out_b, decoder_targets)  # (128, None)
+
+                    # both shape=(128,)
                     batch_likelihood = tf.reduce_mean(
                         decoder_mask * tf.log_sigmoid(
                             tf.reduce_sum(decoder_outputs * target_out_w, -1) + target_out_b
@@ -143,6 +159,7 @@ class Model:
                                              axis=-1),
                         axis=-1) - 0.5 * tf.reduce_mean(1 + log_sigma_sq_z, axis=-1)
                     # batch_cate_loss = tf.reduce_sum(att * (tf.log(att)), axis=-1)
+                    # batch_cate_loss.shape=()
                     batch_cate_loss = tf.reduce_mean(tf.reduce_mean(att, axis=0) * tf.log(tf.reduce_mean(att, axis=0)))
                 return batch_rec_loss, batch_latent_loss, batch_cate_loss, batch_likelihood
 
@@ -154,6 +171,7 @@ class Model:
         else:
             results = generation(z)
             self.batch_likelihood = results[-1]
+            # all loss shape=()
             self.rec_loss = rec_loss = tf.reduce_mean(results[0])
             self.latent_loss = latent_loss = tf.reduce_mean(results[1])
             # self.cate_loss = cate_loss = tf.reduce_mean(results[2])
@@ -316,7 +334,7 @@ if __name__ == '__main__':
     #                     help='data file')
     # parser.add_argument('--map_size', type=tuple, default=(51, 158),
     #                     help='size of map')
-    parser.add_argument('--model_type', type=str, default="",
+    parser.add_argument('--model_type', type=str, default="gm",
                         help='choose a model')
 
     parser.add_argument('--x_latent_size', type=int, default=32,
