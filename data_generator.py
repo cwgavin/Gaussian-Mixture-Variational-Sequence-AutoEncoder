@@ -136,12 +136,12 @@ class DataGenerator:
             batch_d.append(self.traj_sd_cluster[tid][1])
         batch_seq_length = [len(traj) for traj in batch_trajectories]
         batch_x, batch_mask = pad_and_mask(batch_trajectories)
-        if "sd" in self.args.model_type or sd is True:
+        if sd is True:
             return [batch_x, batch_mask, batch_seq_length], [batch_s, batch_d]
         else:
             return [batch_x, batch_mask, batch_seq_length]
 
-    def iterate_all_data(self, batch_size, partial_ratio=1.0, purpose='train'):
+    def iterate_all_data(self, batch_size, partial_ratio=1.0, purpose='train', sd=False):
         if purpose == 'train':
             trajectories = self.trajectories
             traj_num = self.total_traj_num
@@ -165,7 +165,7 @@ class DataGenerator:
                 batch_d.append(traj_sd_cluster[tid][1])
             batch_seq_length = [len(traj) for traj in batch_trajectories]
             batch_x, batch_mask = pad_and_mask(batch_trajectories)
-            if "sd" in self.args.model_type:
+            if sd:
                 yield [batch_x, batch_mask, batch_seq_length], [batch_s, batch_d]
             else:
                 yield [batch_x, batch_mask, batch_seq_length]

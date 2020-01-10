@@ -20,7 +20,8 @@ def compute_output(output_type, sess, model, sampler, purpose, callback):
     all_output = []
     for batch_data, batch_sd in sampler.iterate_all_data(args.batch_size,
                                                          partial_ratio=args.partial_ratio,
-                                                         purpose=purpose):
+                                                         purpose=purpose,
+                                                         sd=True):
         batch_s, batch_d = batch_sd
         if len(batch_data[0]) < args.batch_size:
             last_batch_size = len(batch_data[0])
@@ -214,7 +215,7 @@ def pretrain():
 
         for epoch in range(args.num_epochs):
             for batch_idx in range(int(sampler.total_traj_num / args.batch_size)):
-                batch_data, batch_sd = sampler.next_batch(args.batch_size)
+                batch_data, batch_sd = sampler.next_batch(args.batch_size, sd=True)
                 feed = dict(zip(model.input_form, batch_data))
                 sess.run(model.pretrain_op, feed)
 
@@ -242,7 +243,7 @@ def pretrain():
         sample_num = 10000
         x_embedded = []
         for batch_idx in range(int(sample_num / args.batch_size)):
-            batch_data, batch_sd = sampler.next_batch(args.batch_size)
+            batch_data, batch_sd = sampler.next_batch(args.batch_size, sd=True)
             feed = dict(zip(model.input_form, batch_data))
             x_embedded.append(sess.run(model.batch_post_embedded, feed))
         x_embedded = np.concatenate(x_embedded, axis=0)
@@ -278,7 +279,7 @@ def train():
         for epoch in range(args.num_epochs):
             all_loss = []
             for batch_idx in range(int(sampler.total_traj_num / args.batch_size)):
-                batch_data, batch_sd = sampler.next_batch(args.batch_size)
+                batch_data, batch_sd = sampler.next_batch(args.batch_size, sd=True)
                 batch_s, batch_d = batch_sd
 
                 feed = dict(zip(model.input_form, batch_data))
