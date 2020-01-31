@@ -16,7 +16,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
 
 tf.disable_eager_execution()
-
+tf.disable_v2_behavior()
 
 class Model:
     def __init__(self, args):
@@ -93,6 +93,7 @@ class Model:
 
             # shape = (128, 256)
             eps_z = tf.random_normal(shape=tf.shape(log_sigma_sq_z), mean=0, stddev=1, dtype=tf.float32)
+            # z = mu_z + sigma_z * eps_z
             z = mu_z + tf.sqrt(tf.exp(log_sigma_sq_z)) * eps_z
 
             # shape = (128, 5, 256)  5 clusters
@@ -102,6 +103,7 @@ class Model:
 
             self.batch_post_embedded = z
 
+        # for batch_latent_loss
         with tf.variable_scope("attention"):
             # att_logits/att.shape = (128, 5)
             att_logits = - tf.reduce_sum(tf.square(stack_z - stack_mu_c) / tf.exp(stack_log_sigma_sq_c), axis=-1)
@@ -152,6 +154,7 @@ class Model:
                             tf.reduce_sum(decoder_outputs * target_out_w, -1) + target_out_b
                         ), axis=-1, name="batch_likelihood")
 
+                    # KL divergence between c and z distribution
                     batch_latent_loss = 0.5 * tf.reduce_sum(
                         att * tf.reduce_mean(stack_log_sigma_sq_c
                                              + tf.exp(stack_log_sigma_sq_z) / tf.exp(stack_log_sigma_sq_c)
@@ -176,7 +179,7 @@ class Model:
             self.latent_loss = latent_loss = tf.reduce_mean(results[1])
             # self.cate_loss = cate_loss = tf.reduce_mean(results[2])
             self.cate_loss = cate_loss = results[2]
-            self.loss = loss = rec_loss + latent_loss + 0.1* cate_loss
+            self.loss = loss = rec_loss + latent_loss + 0.1 * cate_loss
             self.pretrain_loss = pretrain_loss = rec_loss
             self.pretrain_op = tf.train.AdamOptimizer(args.learning_rate).minimize(pretrain_loss)
             self.train_op = tf.train.AdamOptimizer(args.learning_rate).minimize(loss)
@@ -202,9 +205,9 @@ def pretrain():
                 sess.run(model.pretrain_op, feed)
 
             val_loss = compute_loss(sess, model, sampler, "val", args)
-            if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
-                print("Early termination with val loss: {}:".format(val_loss))
-                break
+            # if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
+            #     print("Early termination with val loss: {}:".format(val_loss))
+            #     break
             all_val_loss.append(val_loss)
 
             end = time.time()
@@ -212,8 +215,10 @@ def pretrain():
                 epoch, val_loss, end - start))
             start = time.time()
 
-            save_model_name = "./models/{}_{}_{}/{}_{}".format(
-                args.model_type, args.x_latent_size, args.rnn_size, args.model_type, "pretrain")
+            model_dir = f"./models/{args.model_type}_{args.x_latent_size}_{args.rnn_size}"
+            if not os.path.exists(model_dir):
+                os.makedirs(model_dir)
+            save_model_name = model_dir + f"/{args.model_type}_pretrain"
             model.save(sess, save_model_name)
 
         # model_name = "./models/{}_{}_{}/{}_{}".format(
@@ -267,9 +272,9 @@ def train():
                 all_loss.append([rec_loss, cate_loss, latent_loss])
 
             val_loss = compute_loss(sess, model, sampler, "val", args)
-            if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
-                print("Early termination with val loss: {}:".format(val_loss))
-                break
+            # if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
+            #     print("Early termination with val loss: {}:".format(val_loss))
+            #     break
             all_val_loss.append(val_loss)
 
             end = time.time()
@@ -301,6 +306,7 @@ def evaluate():
         all_prob = np.exp(all_likelihood)
 
         y_true = np.ones_like(all_prob)
+        sampler.inject_outliers('pan')
         for idx in sampler.outliers:
             if idx < y_true.shape[0]:
                 y_true[idx] = 0
@@ -326,14 +332,16 @@ def evaluate():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--data_filename', type=str, default="../data/processed_beijing{}.csv",
-                        help='data file')
-    parser.add_argument('--map_size', type=tuple, default=(130, 130),
-                        help='size of map')
-    # parser.add_argument('--data_filename', type=str, default="../data/processed_porto{}.csv",
+    # parser.add_argument('--data_filename', type=str, default="../data/processed_beijing{}.csv",
     #                     help='data file')
-    # parser.add_argument('--map_size', type=tuple, default=(51, 158),
+    # parser.add_argument('--map_size', type=tuple, default=(130, 130),
     #                     help='size of map')
+    parser.add_argument('--data_filename', type=str, default="../data/processed_porto{}.csv",
+                        help='data file')
+    #     parser.add_argument('--map_size', default="50,150", type=str,
+    #                         help='size of map')
+    parser.add_argument('--map_size', default=[50, 150], type=int, nargs='+',
+                        help='size of map')
     parser.add_argument('--model_type', type=str, default="gm",
                         help='choose a model')
 
@@ -341,19 +349,19 @@ if __name__ == '__main__':
                         help='size of input embedding')
     parser.add_argument('--rnn_size', type=int, default=256,
                         help='size of RNN hidden state')
-    parser.add_argument('--mem_num', type=int, default=5,
+    parser.add_argument('--mem_num', type=int, default=10,
                         help='size of sd memory')
 
     parser.add_argument('--neg_size', type=int, default=64,
                         help='size of negative sampling')
     parser.add_argument('--num_epochs', type=int, default=20,
                         help='number of epochs')
-    parser.add_argument('--grad_clip', type=float, default=10.,
-                        help='clip gradients at this value')
+    # parser.add_argument('--grad_clip', type=float, default=10.,
+    #                     help='clip gradients at this value')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--decay_rate', type=float, default=1.,
-                        help='decay of learning rate')
+    # parser.add_argument('--decay_rate', type=float, default=1.,
+    #                     help='decay of learning rate')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='minibatch size')
 
@@ -369,11 +377,16 @@ if __name__ == '__main__':
     parser.add_argument('--gpu_id', type=str, default="0")
     args = parser.parse_args()
 
+    print(args.map_size)
+
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 
+    start = time.time()
     if args.eval:
         evaluate()
     elif args.pt:
         pretrain()
     else:
         train()
+    end = time.time()
+    print(f'\nElapsed time: {int(end - start)} seconds = {round(int(end - start) / 60, 1)} minutes')
