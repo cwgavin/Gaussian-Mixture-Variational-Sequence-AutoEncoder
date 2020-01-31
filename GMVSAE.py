@@ -316,7 +316,7 @@ def evaluate():
         for sd, tids in sd_index.items():
             sd_y_true = y_true[tids]
             sd_prob = all_prob[tids]
-            if sd_y_true.sum() < len(sd_y_true):
+            if sd_y_true.sum() < len(sd_y_true):  # if there's outlier in this sd group of trajectories
                 sd_auc[sd] = auc_score(y_true=sd_y_true, y_score=sd_prob)
         print("Average AUC:", np.mean(list(sd_auc.values())), "Elapsed time:", elapsed)
 
