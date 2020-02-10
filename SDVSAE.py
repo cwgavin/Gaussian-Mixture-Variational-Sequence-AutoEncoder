@@ -234,8 +234,10 @@ def pretrain():
                 epoch, val_loss, end - start))
             start = time.time()
 
-            save_model_name = "./models/{}_{}_{}/{}_{}".format(
-                args.model_type, args.x_latent_size, args.rnn_size, args.model_type, "pretrain")
+            model_dir = f"./models/{args.model_type}_{args.x_latent_size}_{args.rnn_size}"
+            if not os.path.exists(model_dir):
+                os.makedirs(model_dir)
+            save_model_name = model_dir + f"/{args.model_type}_pretrain"
             model.save(sess, save_model_name)
 
         # model_name = "./models/{}_{}_{}/{}_{}".format(
@@ -316,6 +318,7 @@ def train():
 def evaluate():
     model = Model(args)
     sampler = DataGenerator(args)
+    sampler.inject_outliers('pan')
 
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
@@ -358,7 +361,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_filename', type=str, default="../data/processed_porto{}.csv",
                         help='data file')
-    parser.add_argument('--map_size', type=tuple, default=(50, 150),
+    parser.add_argument('--map_size', default=[50, 150], type=int, nargs='+',
                         help='size of map')
 
     # parser.add_argument('--data_filename', type=str, default="../data/processed_beijing{}.csv",
@@ -373,19 +376,19 @@ if __name__ == '__main__':
                         help='size of input embedding')
     parser.add_argument('--rnn_size', type=int, default=256,
                         help='size of RNN hidden state')
-    parser.add_argument('--mem_num', type=int, default=5,
+    parser.add_argument('--mem_num', type=int, default=10,
                         help='size of sd memory')
 
     parser.add_argument('--neg_size', type=int, default=64,
                         help='size of negative sampling')
     parser.add_argument('--num_epochs', type=int, default=20,
                         help='number of epochs')
-    parser.add_argument('--grad_clip', type=float, default=10.,
-                        help='clip gradients at this value')
+#     parser.add_argument('--grad_clip', type=float, default=10.,
+#                         help='clip gradients at this value')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--decay_rate', type=float, default=1.,
-                        help='decay of learning rate')
+#     parser.add_argument('--decay_rate', type=float, default=1.,
+#                         help='decay of learning rate')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='minibatch size')
 
@@ -411,4 +414,4 @@ if __name__ == '__main__':
     else:
         train()
     end = time.time()
-    print(f'Elapsed time: {int(end - start)} seconds = {round(int(end - start) / 60, 1)} minutes')
+    print(f'\nElapsed time: {int(end - start)} seconds = {round(int(end - start) / 60, 1)} minutes')

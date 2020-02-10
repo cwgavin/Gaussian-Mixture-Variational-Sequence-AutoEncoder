@@ -8,7 +8,7 @@ import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
 from utils import *
-from data_generator import DataGenerator
+from data_generator_gavin import DataGenerator
 
 from sklearn.metrics import precision_recall_curve, auc
 from sklearn.cluster import KMeans
@@ -48,23 +48,35 @@ class Model:
         dense = tf.layers.dense
 
         inputs = tf.placeholder(shape=(args.batch_size, None), dtype=tf.int32, name='inputs')
+        time_inputs = tf.placeholder(shape=(args.batch_size, None), dtype=tf.int32, name='time_inputs')
         mask = tf.placeholder(shape=(args.batch_size, None), dtype=tf.float32, name='inputs_mask')
         seq_length = tf.placeholder(shape=args.batch_size, dtype=tf.float32, name='seq_length')
 
         self.s_inputs = s_inputs = tf.placeholder(shape=args.batch_size, dtype=tf.int32, name='s_inputs')
         self.d_inputs = d_inputs = tf.placeholder(shape=args.batch_size, dtype=tf.int32, name='d_inputs')
 
-        self.input_form = [inputs, mask, seq_length]
+        self.input_form = [inputs, time_inputs, mask, seq_length]
 
-        encoder_inputs = inputs
+        # encoder_inputs = inputs
         decoder_inputs = tf.concat([tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32), inputs], axis=1)
         decoder_targets = tf.concat([inputs, tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32)], axis=1)
         decoder_mask = tf.concat([mask, tf.zeros(shape=(args.batch_size, 1), dtype=tf.float32)], axis=1)
 
+        decoder_time_inputs = tf.concat([time_inputs, tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32)], axis=1)
+
         x_size = out_size = args.map_size[0] * args.map_size[1]
-        embeddings = tf.Variable(tf.random_uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
-        encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, encoder_inputs)
-        decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
+        self.embeddings = embeddings = tf.Variable(tf.random_uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        self.encoder_inputs_embedded = encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, inputs)
+        self.decoder_inputs_embedded = decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
+
+        self.time_embeddings = time_embeddings = tf.Variable(tf.random_uniform([49, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        self.encoder_time_inputs_embedded = encoder_time_inputs_embedded = tf.nn.embedding_lookup(time_embeddings, time_inputs)
+        self.decoder_time_inputs_embedded = decoder_time_inputs_embedded = tf.nn.embedding_lookup(time_embeddings, decoder_time_inputs)
+
+        # encoder_inputs_embedded += encoder_time_inputs_embedded
+        # decoder_inputs_embedded += decoder_time_inputs_embedded
+        encoder_inputs_embedded = tf.concat([encoder_inputs_embedded, encoder_time_inputs_embedded], axis=-1)
+        decoder_inputs_embedded = tf.concat([decoder_inputs_embedded, decoder_time_inputs_embedded], axis=-1)
 
         with tf.variable_scope("encoder"):
             encoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
@@ -134,6 +146,7 @@ class Model:
                 with tf.variable_scope("decoder"):
                     decoder_init_state = h
                     decoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
+                    # decoder_outputs.shape=(128, None, 256)
                     decoder_outputs, _ = tf.nn.dynamic_rnn(
                         decoder_cell, decoder_inputs_embedded,
                         initial_state=decoder_init_state,
@@ -151,15 +164,15 @@ class Model:
                             tf.nn.sampled_softmax_loss(
                                 weights=out_w,
                                 biases=out_b,
-                                labels=tf.reshape(decoder_targets, [-1, 1]),
-                                inputs=tf.reshape(decoder_outputs, [-1, args.rnn_size]),
+                                labels=tf.reshape(decoder_targets, [-1, 1]),  # shape=(None, 1)
+                                inputs=tf.reshape(decoder_outputs, [-1, args.rnn_size]),  # shape=(None, 256)
                                 num_sampled=args.neg_size,
                                 num_classes=out_size
                             ), [args.batch_size, -1]
                         ), axis=-1
                     )
-                    target_out_w = tf.nn.embedding_lookup(out_w, decoder_targets)
-                    target_out_b = tf.nn.embedding_lookup(out_b, decoder_targets)
+                    target_out_w = tf.nn.embedding_lookup(out_w, decoder_targets)  # shape=(128, None, 256)
+                    target_out_b = tf.nn.embedding_lookup(out_b, decoder_targets)  # shape=(128, None)
                     batch_likelihood = tf.reduce_mean(
                         decoder_mask * tf.log_sigmoid(
                             tf.reduce_sum(decoder_outputs * target_out_w, -1) + target_out_b
@@ -175,10 +188,8 @@ class Model:
                 return batch_rec_loss, batch_latent_loss, batch_cate_loss, batch_likelihood
 
         if args.eval:
-            sd_z = tf.matmul(
-                tf.one_hot(tf.argmax(sd_att, axis=-1), depth=args.mem_num, axis=-1), mu_c)
-            # sd_z = tf.matmul(
-            #     tf.one_hot(tf.argmax(att-1e-10, axis=-1), depth=args.mem_num, axis=-1), mu_c)
+            sd_z = tf.matmul(tf.one_hot(tf.argmax(sd_att, axis=-1), depth=args.mem_num, axis=-1), mu_c)
+            # sd_z = tf.matmul(tf.one_hot(tf.argmax(att-1e-10, axis=-1), depth=args.mem_num, axis=-1), mu_c)
             results = generation(sd_z)
             self.batch_likelihood = results[-1]
         else:
@@ -191,7 +202,7 @@ class Model:
             self.sd_loss = sd_loss = tf.reduce_mean(
                 tf.nn.softmax_cross_entropy_with_logits_v2(labels=att, logits=sd_logits))
 
-            self.loss = loss = rec_loss + latent_loss + 0.1* cate_loss
+            self.loss = loss = rec_loss + latent_loss + 0.1 * cate_loss
             self.pretrain_loss = pretrain_loss = rec_loss
 
             all_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
@@ -210,6 +221,7 @@ class Model:
 def pretrain():
     model = Model(args)
     sampler = DataGenerator(args)
+    # sampler = load_obj('sampler')
 
     all_val_loss = []
     with tf.Session() as sess:
@@ -221,7 +233,7 @@ def pretrain():
                 batch_data, batch_sd = sampler.next_batch(args.batch_size, sd=True)
                 feed = dict(zip(model.input_form, batch_data))
                 sess.run(model.pretrain_op, feed)
-
+            # print(sess.run(model.embeddings, feed))
             val_loss = compute_output(model.pretrain_loss, sess, model, sampler,
                                       purpose="val", callback=np.mean)
             # if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
@@ -234,8 +246,10 @@ def pretrain():
                 epoch, val_loss, end - start))
             start = time.time()
 
-            save_model_name = "./models/{}_{}_{}/{}_{}".format(
-                args.model_type, args.x_latent_size, args.rnn_size, args.model_type, "pretrain")
+            model_dir = f"./models/{args.model_type}_{args.x_latent_size}_{args.rnn_size}"
+            if not os.path.exists(model_dir):
+                os.makedirs(model_dir)
+            save_model_name = model_dir + f"/{args.model_type}_pretrain"
             model.save(sess, save_model_name)
 
         # model_name = "./models/{}_{}_{}/{}_{}".format(
@@ -316,6 +330,7 @@ def train():
 def evaluate():
     model = Model(args)
     sampler = DataGenerator(args)
+    sampler.inject_outliers('pan')
 
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
@@ -350,22 +365,15 @@ def evaluate():
         bin_num = 5
         step_size = int(len(sorted_sd_auc) / bin_num)
         for i in range(bin_num):
-            print(np.mean(sorted_sd_auc[i*step_size:(i+1)*step_size]))
-
+            print(np.mean(sorted_sd_auc[i * step_size:(i + 1) * step_size]))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_filename', type=str, default="../data/processed_porto{}.csv",
                         help='data file')
-    parser.add_argument('--map_size', type=tuple, default=(50, 150),
+    parser.add_argument('--map_size', default=[50, 150], type=int, nargs='+',
                         help='size of map')
-
-    # parser.add_argument('--data_filename', type=str, default="../data/processed_beijing{}.csv",
-    #                     help='data file')
-    # parser.add_argument('--map_size', type=tuple, default=(130, 130),
-    #                     help='size of map')
-
     parser.add_argument('--model_type', type=str, default="sd",
                         help='choose a model')
 
@@ -380,12 +388,8 @@ if __name__ == '__main__':
                         help='size of negative sampling')
     parser.add_argument('--num_epochs', type=int, default=20,
                         help='number of epochs')
-    parser.add_argument('--grad_clip', type=float, default=10.,
-                        help='clip gradients at this value')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--decay_rate', type=float, default=1.,
-                        help='decay of learning rate')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='minibatch size')
 
