@@ -8,7 +8,7 @@ import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
 from utils import *
-from data_generator import DataGenerator
+from data_generator_gavin import DataGenerator
 
 from sklearn.metrics import precision_recall_curve, auc
 from sklearn.cluster import KMeans
@@ -48,23 +48,32 @@ class Model:
         dense = tf.layers.dense
 
         inputs = tf.placeholder(shape=(args.batch_size, None), dtype=tf.int32, name='inputs')
+        time_inputs = tf.placeholder(shape=(args.batch_size, None), dtype=tf.int32, name='time_inputs')
         mask = tf.placeholder(shape=(args.batch_size, None), dtype=tf.float32, name='inputs_mask')
         seq_length = tf.placeholder(shape=args.batch_size, dtype=tf.float32, name='seq_length')
 
         self.s_inputs = s_inputs = tf.placeholder(shape=args.batch_size, dtype=tf.int32, name='s_inputs')
         self.d_inputs = d_inputs = tf.placeholder(shape=args.batch_size, dtype=tf.int32, name='d_inputs')
 
-        self.input_form = [inputs, mask, seq_length]
+        self.input_form = [inputs, time_inputs, mask, seq_length]
 
-        encoder_inputs = inputs
         decoder_inputs = tf.concat([tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32), inputs], axis=1)
         decoder_targets = tf.concat([inputs, tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32)], axis=1)
         decoder_mask = tf.concat([mask, tf.zeros(shape=(args.batch_size, 1), dtype=tf.float32)], axis=1)
 
         x_size = out_size = args.map_size[0] * args.map_size[1]
         embeddings = tf.Variable(tf.random_uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
-        encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, encoder_inputs)
+        encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, inputs)
         decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
+
+        time_embeddings = tf.Variable(tf.random_uniform([49, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        encoder_time_inputs_embedded = tf.nn.embedding_lookup(time_embeddings, time_inputs)
+
+        time_mean = tf.reduce_mean(encoder_time_inputs_embedded, axis=1)
+        mu_c_delta = dense(time_mean, args.rnn_size, activation=None)
+        stack_mu_c_delta = tf.stack([mu_c_delta] * args.mem_num, axis=1)
+        log_sigma_sq_c_delta = dense(time_mean, args.rnn_size, activation=None)
+        stack_log_sigma_sq_c_delta = tf.stack([log_sigma_sq_c_delta] * args.mem_num, axis=1)
 
         with tf.variable_scope("encoder"):
             encoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
@@ -99,9 +108,12 @@ class Model:
             stack_mu_c = tf.stack([mu_c] * args.batch_size, axis=0)
             stack_log_sigma_sq_c = tf.stack([log_sigma_sq_c] * args.batch_size, axis=0)
 
+            stack_mu_c += stack_mu_c_delta
+            stack_log_sigma_sq_c += stack_log_sigma_sq_c_delta
+
         with tf.variable_scope("latent"):
-            mu_z = dense(encoder_final_state, args.rnn_size, activation=None)
-            log_sigma_sq_z = dense(encoder_final_state, args.rnn_size, activation=None)
+            mu_z = dense(encoder_final_state, args.rnn_size, activation=None)   # shape=(128, 256)
+            log_sigma_sq_z = dense(encoder_final_state, args.rnn_size, activation=None)   # shape=(128, 256)
 
             eps_z = tf.random_normal(shape=tf.shape(log_sigma_sq_z), mean=0, stddev=1, dtype=tf.float32)
             z = mu_z + tf.sqrt(tf.exp(log_sigma_sq_z)) * eps_z
@@ -174,8 +186,7 @@ class Model:
 
         if args.eval:
             sd_z = tf.matmul(tf.one_hot(tf.argmax(sd_att, axis=-1), depth=args.mem_num, axis=-1), mu_c)
-            # sd_z = tf.matmul(
-            #     tf.one_hot(tf.argmax(att-1e-10, axis=-1), depth=args.mem_num, axis=-1), mu_c)
+            # sd_z = tf.matmul(tf.one_hot(tf.argmax(att-1e-10, axis=-1), depth=args.mem_num, axis=-1), mu_c)
             results = generation(sd_z)
             self.batch_likelihood = results[-1]
         else:
@@ -217,15 +228,16 @@ def pretrain():
                 batch_data, batch_sd = sampler.next_batch(args.batch_size, sd=True)
                 feed = dict(zip(model.input_form, batch_data))
                 sess.run(model.pretrain_op, feed)
-
-            val_loss = compute_output(model.pretrain_loss, sess, model, sampler, purpose="val", callback=np.mean)
+            val_loss = compute_output(model.pretrain_loss, sess, model, sampler,
+                                      purpose="val", callback=np.mean)
             if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
                 print("Early termination with val loss: {}:".format(val_loss))
                 break
             all_val_loss.append(val_loss)
 
             end = time.time()
-            print("pretrain epoch: {}\tval loss: {}\telapsed time: {}".format(epoch, val_loss, end - start))
+            print("pretrain epoch: {}\tval loss: {}\telapsed time: {}".format(
+                epoch, val_loss, end - start))
             start = time.time()
 
             model_dir = f"./models/{args.model_type}_{args.x_latent_size}_{args.rnn_size}"
@@ -291,7 +303,8 @@ def train():
 
                 all_loss.append([rec_loss, cate_loss, latent_loss, sd_loss])
 
-            val_loss = compute_output(model.loss, sess, model, sampler, purpose="val", callback=np.mean)
+            val_loss = compute_output(model.loss, sess, model, sampler,
+                                      purpose="val", callback=np.mean)
             # if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
             #     print("Early termination with val loss: {}:".format(val_loss))
             #     break
@@ -344,8 +357,7 @@ def evaluate():
         bin_num = 5
         step_size = int(len(sorted_sd_auc) / bin_num)
         for i in range(bin_num):
-            print(np.mean(sorted_sd_auc[i*step_size:(i+1)*step_size]))
-
+            print(np.mean(sorted_sd_auc[i * step_size:(i + 1) * step_size]))
 
 
 if __name__ == '__main__':
@@ -354,12 +366,6 @@ if __name__ == '__main__':
                         help='data file')
     parser.add_argument('--map_size', default=[50, 150], type=int, nargs='+',
                         help='size of map')
-
-    # parser.add_argument('--data_filename', type=str, default="../data/processed_beijing{}.csv",
-    #                     help='data file')
-    # parser.add_argument('--map_size', type=tuple, default=(130, 130),
-    #                     help='size of map')
-
     parser.add_argument('--model_type', type=str, default="sd",
                         help='choose a model')
 
@@ -367,19 +373,15 @@ if __name__ == '__main__':
                         help='size of input embedding')
     parser.add_argument('--rnn_size', type=int, default=256,
                         help='size of RNN hidden state')
-    parser.add_argument('--mem_num', type=int, default=10,
+    parser.add_argument('--mem_num', type=int, default=5,
                         help='size of sd memory')
 
     parser.add_argument('--neg_size', type=int, default=64,
                         help='size of negative sampling')
     parser.add_argument('--num_epochs', type=int, default=20,
                         help='number of epochs')
-#     parser.add_argument('--grad_clip', type=float, default=10.,
-#                         help='clip gradients at this value')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='learning rate')
-#     parser.add_argument('--decay_rate', type=float, default=1.,
-#                         help='decay of learning rate')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='minibatch size')
 
@@ -405,4 +407,4 @@ if __name__ == '__main__':
     else:
         train()
     end = time.time()
-    print(f'\nElapsed time: {int(end - start)} seconds = {round(int(end - start) / 60, 1)} minutes')
+    print(f'Elapsed time: {int(end - start)} seconds = {round(int(end - start) / 60, 1)} minutes')
