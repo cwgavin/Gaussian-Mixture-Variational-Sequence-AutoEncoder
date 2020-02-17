@@ -19,18 +19,27 @@ class DataGenerator:
     def __init__(self, args):
         print("Loading data...")
 
-        self.trajectories = sorted([
-            eval(eachline) for eachline in open(args.data_filename.format("_train"), 'r').readlines()
-        ], key=lambda k: len(k))
+        traj = []
+        timeslot = []
+        train_lines = open(args.data_filename.format("_train"), 'r').readlines()
+        for eachline in train_lines:
+            traj.append([p[0] for p in eval(eachline)])
+            timeslot.append([p[1] for p in eval(eachline)])
+
+        val_traj = []
+        val_timeslot = []
+        val_lines = open(args.data_filename.format("_val"), 'r').readlines()
+        for eachline in val_lines:
+            val_traj.append([p[0] for p in eval(eachline)])
+            val_timeslot.append([p[1] for p in eval(eachline)])
+
+        self.trajectories = traj
+        self.timeslots = timeslot
         self.total_traj_num = len(self.trajectories)
 
-        self.val_trajectories = sorted([
-            eval(eachline) for eachline in open(args.data_filename.format("_val"), 'r').readlines()
-        ], key=lambda k: len(k))
+        self.val_trajectories = val_traj
+        self.val_timeslots = val_timeslot
         self.val_traj_num = len(self.val_trajectories)
-
-        self.real_trajectories = self.trajectories[:]
-        self.real_val_trajectories = self.val_trajectories[:]
 
         self.args = args
         print("{} trajectories loading complete.".format(self.total_traj_num))
@@ -96,7 +105,7 @@ class DataGenerator:
                                           level=level, prob=point_prob)
         elif otype == 'pan':
             outliers = self.pan_batch([self.val_trajectories[idx] for idx in selected_idx],
-                                          level=level, prob=point_prob)
+                                      level=level, prob=point_prob)
         else:
             outliers = None
         for i, idx in enumerate(selected_idx):
@@ -129,47 +138,61 @@ class DataGenerator:
         longest_idx = min(self.total_traj_num, anchor_idx + batch_size * 2)
         batch_idx = np.random.randint(shortest_idx, longest_idx, size=batch_size)
         batch_trajectories = []
+        batch_trajectories_timeslots = []
         batch_s, batch_d = [], []
         for tid in batch_idx:
-            partial = int(len(self.trajectories[tid]) * partial_ratio)
-            batch_trajectories.append(self.trajectories[tid][:partial])
+            traj = self.trajectories[tid]
+            traj_timeslots = self.timeslots[tid]
+
+            partial = int(len(traj) * partial_ratio)
+            batch_trajectories.append(traj[:partial])
+            batch_trajectories_timeslots.append(traj_timeslots[:partial])
+
             batch_s.append(self.traj_sd_cluster[tid][0])
             batch_d.append(self.traj_sd_cluster[tid][1])
         batch_seq_length = [len(traj) for traj in batch_trajectories]
         batch_x, batch_mask = pad_and_mask(batch_trajectories)
+        batch_time_x, _ = pad_and_mask(batch_trajectories_timeslots)
+
         if sd is True:
-            return [batch_x, batch_mask, batch_seq_length], [batch_s, batch_d]
+            return [batch_x, batch_time_x, batch_mask, batch_seq_length], [batch_s, batch_d]
         else:
-            return [batch_x, batch_mask, batch_seq_length]
+            return [batch_x, batch_time_x, batch_mask, batch_seq_length]
 
     def iterate_all_data(self, batch_size, partial_ratio=1.0, purpose='train', sd=False):
         if purpose == 'train':
             trajectories = self.trajectories
             traj_num = self.total_traj_num
             traj_sd_cluster = self.traj_sd_cluster
+            timeslots = self.timeslots
         elif purpose == "val":
             trajectories = self.val_trajectories
             traj_num = self.val_traj_num
             traj_sd_cluster = self.val_traj_sd_cluster
+            timeslots = self.val_timeslots
         else:
             trajectories = None
             traj_num = None
             traj_sd_cluster = None
+            timeslots = None
 
         for batch_idx in range(0, traj_num, batch_size):
             batch_trajectories = []
+            batch_trajectories_timeslots = []
             batch_s, batch_d = [], []
             for tid in range(batch_idx, min(batch_idx + batch_size, traj_num)):
                 partial = int(len(trajectories[tid]) * partial_ratio)
                 batch_trajectories.append(trajectories[tid][:partial])
+                batch_trajectories_timeslots.append(timeslots[tid][:partial])
                 batch_s.append(traj_sd_cluster[tid][0])
                 batch_d.append(traj_sd_cluster[tid][1])
             batch_seq_length = [len(traj) for traj in batch_trajectories]
             batch_x, batch_mask = pad_and_mask(batch_trajectories)
+            batch_time_x, _ = pad_and_mask(batch_trajectories_timeslots)
             if sd:
-                yield [batch_x, batch_mask, batch_seq_length], [batch_s, batch_d]
+                yield [batch_x, batch_time_x, batch_mask, batch_seq_length], [batch_s, batch_d]
             else:
-                yield [batch_x, batch_mask, batch_seq_length]
+                yield [batch_x, batch_time_x, batch_mask, batch_seq_length]
 
     def _perturb_point(self, point, level, offset=None):
         map_size = self.map_size
@@ -188,8 +211,8 @@ class DataGenerator:
         noisy_batch_x = []
         for traj in batch_x:
             noisy_batch_x.append([traj[0]] + [self._perturb_point(p, level)
-                                 if not p == 0 and np.random.random() < prob else p
-                                 for p in traj[1:-1]] + [traj[-1]])
+                                              if not p == 0 and np.random.random() < prob else p
+                                              for p in traj[1:-1]] + [traj[-1]])
         return noisy_batch_x
 
     def pan_batch(self, batch_x, level, prob, vary=False):
