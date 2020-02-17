@@ -1,16 +1,10 @@
 import os
-import sys
-# sys.path.append("../")
-
 import time
 import argparse
-import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
 from utils import *
 from data_generator_gavin import DataGenerator
-
-from sklearn.metrics import precision_recall_curve, auc
 from sklearn.cluster import KMeans
 
 tf.disable_eager_execution()
@@ -62,18 +56,21 @@ class Model:
         decoder_mask = tf.concat([mask, tf.zeros(shape=(args.batch_size, 1), dtype=tf.float32)], axis=1)
 
         x_size = out_size = args.map_size[0] * args.map_size[1]
-        embeddings = tf.Variable(tf.random_uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
-        encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, inputs)
-        decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
+        self.embeddings = embeddings = tf.Variable(tf.random_uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        self.encoder_inputs_embedded = encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, inputs)
+        self.decoder_inputs_embedded = decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
 
-        time_embeddings = tf.Variable(tf.random_uniform([49, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
-        encoder_time_inputs_embedded = tf.nn.embedding_lookup(time_embeddings, time_inputs)
+        self.time_embeddings = time_embeddings = tf.Variable(tf.random_uniform([49, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        self.encoder_time_inputs_embedded = encoder_time_inputs_embedded = tf.nn.embedding_lookup(time_embeddings, time_inputs)
 
         time_mean = tf.reduce_mean(encoder_time_inputs_embedded, axis=1)
-        mu_c_delta = dense(time_mean, args.rnn_size, activation=None)
-        stack_mu_c_delta = tf.stack([mu_c_delta] * args.mem_num, axis=1)
-        log_sigma_sq_c_delta = dense(time_mean, args.rnn_size, activation=None)
-        stack_log_sigma_sq_c_delta = tf.stack([log_sigma_sq_c_delta] * args.mem_num, axis=1)
+        mu_c_delta = dense(time_mean, args.mem_num * args.rnn_size, activation=None)
+        mu_c_delta = tf.reduce_mean(mu_c_delta, axis=0)
+        mu_c_delta = tf.reshape(mu_c_delta, [args.mem_num, args.rnn_size])
+
+        log_sigma_sq_c_delta = dense(time_mean, args.mem_num * args.rnn_size, activation=None)
+        log_sigma_sq_c_delta = tf.reduce_mean(log_sigma_sq_c_delta, axis=0)
+        log_sigma_sq_c_delta = tf.reshape(log_sigma_sq_c_delta, [args.mem_num, args.rnn_size])
 
         with tf.variable_scope("encoder"):
             encoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
@@ -105,11 +102,10 @@ class Model:
             self.sigma_c = log_sigma_sq_c
             self.pi = pi_prior
 
+            mu_c += mu_c_delta
+            log_sigma_sq_c += log_sigma_sq_c_delta
             stack_mu_c = tf.stack([mu_c] * args.batch_size, axis=0)
             stack_log_sigma_sq_c = tf.stack([log_sigma_sq_c] * args.batch_size, axis=0)
-
-            stack_mu_c += stack_mu_c_delta
-            stack_log_sigma_sq_c += stack_log_sigma_sq_c_delta
 
         with tf.variable_scope("latent"):
             mu_z = dense(encoder_final_state, args.rnn_size, activation=None)   # shape=(128, 256)
@@ -135,7 +131,8 @@ class Model:
 
         # for batch_latent_loss
         with tf.variable_scope("attention"):
-            att_logits = - tf.reduce_sum(tf.square(stack_z - stack_mu_c) / tf.exp(stack_log_sigma_sq_c), axis=-1)
+            att_logits = - tf.reduce_sum(tf.square(stack_z - stack_mu_c)
+                                         / tf.exp(stack_log_sigma_sq_c), axis=-1)
             att = tf.nn.softmax(att_logits) + 1e-10
             self.batch_att = att
 
@@ -144,6 +141,7 @@ class Model:
                 with tf.variable_scope("decoder"):
                     decoder_init_state = h
                     decoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
+                    # decoder_outputs.shape=(128, None, 256)
                     decoder_outputs, _ = tf.nn.dynamic_rnn(
                         decoder_cell, decoder_inputs_embedded,
                         initial_state=decoder_init_state,
@@ -168,8 +166,8 @@ class Model:
                             ), [args.batch_size, -1]
                         ), axis=-1
                     )
-                    target_out_w = tf.nn.embedding_lookup(out_w, decoder_targets)
-                    target_out_b = tf.nn.embedding_lookup(out_b, decoder_targets)
+                    target_out_w = tf.nn.embedding_lookup(out_w, decoder_targets)  # shape=(128, None, 256)
+                    target_out_b = tf.nn.embedding_lookup(out_b, decoder_targets)  # shape=(128, None)
                     batch_likelihood = tf.reduce_mean(
                         decoder_mask * tf.log_sigmoid(
                             tf.reduce_sum(decoder_outputs * target_out_w, -1) + target_out_b
@@ -186,7 +184,7 @@ class Model:
 
         if args.eval:
             sd_z = tf.matmul(tf.one_hot(tf.argmax(sd_att, axis=-1), depth=args.mem_num, axis=-1), mu_c)
-            # sd_z = tf.matmul(tf.one_hot(tf.argmax(sd_att, axis=-1), depth=args.mem_num, axis=-1), mu_c+tf.reduce_mean(stack_mu_c_delta, 0))
+            # sd_z = tf.matmul(tf.one_hot(tf.argmax(att-1e-10, axis=-1), depth=args.mem_num, axis=-1), mu_c)
             results = generation(sd_z)
             self.batch_likelihood = results[-1]
         else:
@@ -196,7 +194,8 @@ class Model:
             self.latent_loss = latent_loss = tf.reduce_mean(results[1])
             self.cate_loss = cate_loss = results[2]
 
-            self.sd_loss = sd_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=att, logits=sd_logits))
+            self.sd_loss = sd_loss = tf.reduce_mean(
+                tf.nn.softmax_cross_entropy_with_logits_v2(labels=att, logits=sd_logits))
 
             self.loss = loss = rec_loss + latent_loss + 0.1 * cate_loss
             self.pretrain_loss = pretrain_loss = rec_loss
@@ -303,8 +302,7 @@ def train():
 
                 all_loss.append([rec_loss, cate_loss, latent_loss, sd_loss])
 
-            val_loss = compute_output(model.loss, sess, model, sampler,
-                                      purpose="val", callback=np.mean)
+            val_loss = compute_output(model.loss, sess, model, sampler, purpose="val", callback=np.mean)
             # if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
             #     print("Early termination with val loss: {}:".format(val_loss))
             #     break
