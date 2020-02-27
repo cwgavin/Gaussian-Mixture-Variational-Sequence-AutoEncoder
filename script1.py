@@ -56,8 +56,9 @@ def add_timestamp (row):
     traj = row['traj']
     for i in range(len(traj)):
         t = row['time'] + i * 15    # each 15 seconds
+        hour_slot = t // 3600 % 24
         # timeslot = (0 if row['TIMESTAMP'].weekday() < 5 else 1) * 24 + (t // 3600)
-        timeslot = (0 if row['TIMESTAMP'].weekday() < 5 else 1) * 24 + (t // 3600 + 1)
+        timeslot = (0 if row['TIMESTAMP'].weekday() < 5 else 1) * 24 + (hour_slot + 1)
         traj[i] = (traj[i], timeslot)
     return traj
 
@@ -86,7 +87,7 @@ def process(csv_name, skiprows, map_size, delimiter, quoting, output_file):
                                               )]
         # chunk['weekday'] = chunk['TIMESTAMP'].apply(lambda x: 1 if x.weekday() < 5 else 0)
         chunk['time'] = chunk['TIMESTAMP'].apply(lambda x: x.hour * 3600 + x.minute * 60 + x.second)
-        chunk['timeslot'] = chunk['TIMESTAMP'].apply(lambda x: (0 if x.weekday() < 5 else 1) * 24 + x.hour)
+        # chunk['timeslot'] = chunk['TIMESTAMP'].apply(lambda x: (0 if x.weekday() < 5 else 1) * 24 + x.hour)
         chunk['traj'] = chunk['POLYLINE'].apply(get_grid_id, args=(map_size,))
         chunk['traj'].apply(count_sd)
 
@@ -132,6 +133,7 @@ def filter_by_sd(delimiter, quoting, output_file, output_file2):
     total_rows = 0
     write_mode = 'w'
     for chunk in data:
+        # chunk = chunk[chunk['traj'].apply(lambda x: sd[(x[0], x[-1])] >= 25)]
         chunk = chunk[chunk['traj'].apply(lambda x: sd[(x[0][0], x[-1][0])] >= 25)]
         total_rows += chunk.shape[0]
 

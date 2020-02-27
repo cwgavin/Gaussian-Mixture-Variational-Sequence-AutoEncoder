@@ -1,13 +1,10 @@
 import os
 import time
 import argparse
-# import tensorflow as tf
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 from utils import *
 from data_generator import DataGenerator
 from sklearn.metrics import precision_recall_curve, auc
-
-tf.disable_eager_execution()
 
 
 class Model:
@@ -24,37 +21,29 @@ class Model:
         decoder_mask = tf.concat([mask, tf.zeros(shape=(args.batch_size, 1), dtype=tf.float32)], axis=1)
 
         x_size = out_size = args.map_size[0] * args.map_size[1]
-        embeddings = tf.Variable(tf.random_uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        embeddings = tf.Variable(tf.random.uniform([x_size, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
         encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, encoder_inputs)
         decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
 
-        with tf.variable_scope("encoder"):
-            encoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
-            _, encoder_final_state = tf.nn.dynamic_rnn(
-                encoder_cell, encoder_inputs_embedded,
-                sequence_length=seq_length,
-                dtype=tf.float32,
-            )
+        with tf.name_scope("encoder"):
+            encoder_cell = tf.keras.layers.GRUCell(args.rnn_size)
+            rnn_input = tf.keras.Input(encoder_inputs_embedded)
+            rnn_layer = tf.keras.layers.RNN(encoder_cell, return_state=True)
+            encoder_final_state = rnn_layer(rnn_input)[-1]
 
-        fc_w = tf.get_variable("fc_w", [args.rnn_size, args.rnn_size], tf.float32,
-                               tf.random_normal_initializer(stddev=0.02))
-        fc_b = tf.get_variable("fc_b", [args.rnn_size], tf.float32,
-                               initializer=tf.constant_initializer(0.0))
+        fc_w = tf.Variable(tf.random_normal_initializer(stddev=0.02), name="fc_w", shape=[args.rnn_size, args.rnn_size], dtype=tf.float32)
+        fc_b = tf.Variable(tf.constant_initializer(0.0), name="fc_b", shape=[args.rnn_size], dtype=tf.float32)
 
-        with tf.variable_scope("decoder"):
+        with tf.name_scope("decoder"):
             decoder_init_state = tf.matmul(encoder_final_state, fc_w) + fc_b
-            decoder_cell = tf.nn.rnn_cell.GRUCell(args.rnn_size)
-            decoder_outputs, _ = tf.nn.dynamic_rnn(
-                decoder_cell, decoder_inputs_embedded,
-                initial_state=decoder_init_state,
-                sequence_length=seq_length,
-                dtype=tf.float32,
-            )
+            decoder_cell = tf.keras.layers.GRUCell(args.rnn_size)
+            rnn_input = tf.keras.Input(decoder_inputs_embedded)
+            rnn_layer = tf.keras.layers.RNN(decoder_cell)
+            decoder_outputs = rnn_layer(rnn_input, initial_state=decoder_init_state)
 
-        out_w = tf.get_variable("out_w", [out_size, args.rnn_size], tf.float32,
-                                tf.random_normal_initializer(stddev=0.02))
-        out_b = tf.get_variable("out_b", [out_size], tf.float32,
-                                initializer=tf.constant_initializer(0.0))
+        out_w = tf.Variable(tf.random_normal_initializer(stddev=0.02), name="out_w", shape=[out_size, args.rnn_size], dtype=tf.float32)
+        out_b = tf.Variable(tf.constant_initializer(0.0), name="out_b", shape=[out_size], dtype=tf.float32)
+
         batch_loss = tf.reduce_mean(
             decoder_mask * tf.reshape(
                 tf.nn.sampled_softmax_loss(
@@ -67,19 +56,20 @@ class Model:
                 ), [args.batch_size, -1]
             ), axis=-1
         )
+        var_list = [embeddings, fc_w, fc_b, out_w, out_b]
         self.loss = loss = tf.reduce_mean(batch_loss)
-        self.train_op = tf.train.AdamOptimizer(args.learning_rate).minimize(loss)
+        self.train_op = tf.keras.optimizers.Adam(args.learning_rate).minimize(loss, var_list)
 
         target_out_w = tf.nn.embedding_lookup(out_w, decoder_targets)
         target_out_b = tf.nn.embedding_lookup(out_b, decoder_targets)
 
         self.batch_likelihood = tf.reduce_mean(
-            decoder_mask * tf.log_sigmoid(
+            decoder_mask * tf.math.log_sigmoid(
                 tf.reduce_sum(decoder_outputs * target_out_w, -1) + target_out_b
             ), axis=-1, name="batch_likelihood")
         self.batch_encodings = encoder_final_state[0]
 
-        saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES), max_to_keep=10)
+        saver = tf.compat.v1.train.Saver(var_list, max_to_keep=10)
         self.save, self.restore = saver.save, saver.restore
 
 
@@ -88,39 +78,38 @@ def train():
     sampler = DataGenerator(args)
 
     all_val_loss = []
-    with tf.Session() as sess:
-        tf.global_variables_initializer().run()
+    # with tf.Session() as sess:
+        # tf.global_variables_initializer().run()
+    start = time.time()
+    for epoch in range(args.num_epochs):
+        all_loss = []
+        for batch_idx in range(int(sampler.total_traj_num / args.batch_size)):
+            batch_data = sampler.next_batch(args.batch_size)
+            feed = dict(zip(model.input_form, batch_data))
+
+            loss, _ = sess.run([model.loss, model.train_op], feed)
+            all_loss.append(loss)
+
+        val_loss = compute_loss(sess, model, sampler, "val", args)
+
+        if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
+            print("Early termination with val loss: {}:".format(val_loss))
+            break
+
+        all_val_loss.append(val_loss)
+
+        end = time.time()
+        print("epoch: {}\tval loss: {}\telapsed time: {}".format(epoch, val_loss, end - start))
         start = time.time()
-        for epoch in range(args.num_epochs):
-            all_loss = []
-            for batch_idx in range(int(sampler.total_traj_num / args.batch_size)):
-                batch_data = sampler.next_batch(args.batch_size)
-                feed = dict(zip(model.input_form, batch_data))
 
-                loss, _ = sess.run([model.loss, model.train_op], feed)
-                all_loss.append(loss)
-
-            val_loss = compute_loss(sess, model, sampler, "val", args)
-
-            if len(all_val_loss) > 0 and val_loss >= all_val_loss[-1]:
-                print("Early termination with val loss: {}:".format(val_loss))
-                break
-
-            all_val_loss.append(val_loss)
-
-            end = time.time()
-            print("epoch: {}\tval loss: {}\telapsed time: {}".format(epoch, val_loss, end - start))
-            start = time.time()
-
-            save_model_name = "./models/{}_{}_{}/{}_{}".format(
-                args.model_type, args.x_latent_size, args.rnn_size, args.model_type, epoch)
-            model.save(sess, save_model_name)
+        save_model_name = "./models/{}_{}_{}/{}_{}".format(
+            args.model_type, args.x_latent_size, args.rnn_size, args.model_type, epoch)
+        model.save(save_model_name)
 
 
 def evaluate():
     model = Model(args)
     sampler = DataGenerator(args)
-    sampler.inject_outliers('pan')
 
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
@@ -130,7 +119,7 @@ def evaluate():
         model.restore(sess, model_name)
 
         st = time.time()
-        all_likelihood = compute_likelihood(sess, model, sampler, "train", args)
+        all_likelihood = compute_likelihood(sess, model, sampler, "train")
         elapsed = time.time() - st
 
         all_prob = np.exp(all_likelihood)
@@ -147,17 +136,15 @@ def evaluate():
             sd_prob = all_prob[tids]
             if sd_y_true.sum() < len(sd_y_true):
                 sd_auc[sd] = auc_score(y_true=sd_y_true, y_score=sd_prob)
-        # print("Average AUC:", np.mean(list(sd_auc.values())), "Elapsed time:", elapsed)
-        auc = np.mean(list(sd_auc.values()))
-        print(auc)
+        print("Average AUC:", np.mean(list(sd_auc.values())), "Elapsed time:", elapsed)
 
-        # sorted_sd_index = sorted(list(sd_auc.keys()), key=lambda k: len(sd_index[k]))
-        # sorted_sd_auc = [sd_auc[sd] for sd in sorted_sd_index]
-        #
-        # bin_num = 5
-        # step_size = int(len(sorted_sd_auc) / bin_num)
-        # for i in range(bin_num):
-        #     print(np.mean(sorted_sd_auc[i*step_size:(i+1)*step_size]))
+        sorted_sd_index = sorted(list(sd_auc.keys()), key=lambda k: len(sd_index[k]))
+        sorted_sd_auc = [sd_auc[sd] for sd in sorted_sd_index]
+
+        bin_num = 5
+        step_size = int(len(sorted_sd_auc) / bin_num)
+        for i in range(bin_num):
+            print(np.mean(sorted_sd_auc[i*step_size:(i+1)*step_size]))
 
 
 

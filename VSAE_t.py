@@ -1,27 +1,26 @@
 import os
-import sys
-# sys.path.append("../")
-
 import time
 import argparse
-import numpy as np
 # import tensorflow as tf
 import tensorflow.compat.v1 as tf
 from utils import *
-from data_generator import DataGenerator
-from sklearn.metrics import precision_recall_curve, auc
+from data_generator_gavin import DataGenerator
 
 tf.disable_eager_execution()
 
 
 class Model:
     def __init__(self, args):
+        self.args = args
+        dense = tf.layers.dense
+
         # inputs/mask.shape=(128, None)  'None' in shape means any number  seq_length.shape=(128,)
         inputs = tf.placeholder(shape=(args.batch_size, None), dtype=tf.int32, name='inputs')
+        time_inputs = tf.placeholder(shape=(args.batch_size, None), dtype=tf.int32, name='time_inputs')
         mask = tf.placeholder(shape=(args.batch_size, None), dtype=tf.float32, name='inputs_mask')
         seq_length = tf.placeholder(shape=args.batch_size, dtype=tf.float32, name='seq_length')
 
-        self.input_form = [inputs, mask, seq_length]
+        self.input_form = [inputs, time_inputs, mask, seq_length]
 
         # all shape=(128, None)
         encoder_inputs = inputs
@@ -29,7 +28,6 @@ class Model:
         decoder_targets = tf.concat([inputs, tf.zeros(shape=(args.batch_size, 1), dtype=tf.int32)], axis=1)
         decoder_mask = tf.concat([mask, tf.zeros(shape=(args.batch_size, 1), dtype=tf.float32)], axis=1)
 
-        # map size
         x_size = out_size = args.map_size[0] * args.map_size[1]
         # embeddings.shape=(16900, 32)  tf.random_uniform(shape, minval=0, maxval=None, ...)
         # x_latent_size is the input embedding size = 32
@@ -38,6 +36,13 @@ class Model:
         # shape=(128, None, 32)
         encoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, encoder_inputs)
         decoder_inputs_embedded = tf.nn.embedding_lookup(embeddings, decoder_inputs)
+
+        time_embeddings = tf.Variable(tf.random_uniform([49, args.x_latent_size], -1.0, 1.0), dtype=tf.float32)
+        encoder_time_inputs_embedded = tf.nn.embedding_lookup(time_embeddings, time_inputs)
+
+        time_mean = tf.reduce_mean(encoder_time_inputs_embedded, axis=1)
+        mu_delta = dense(time_mean, args.rnn_size, activation=None)
+        log_sigma_sq_delta = dense(time_mean, args.rnn_size, activation=None)
 
         with tf.variable_scope("encoder"):
             # create a GRUCell  output_size = state_size = 256
@@ -65,12 +70,13 @@ class Model:
                                   tf.constant_initializer(0.0))
 
         # all shape=(128, 256)
-        mu = tf.matmul(encoder_final_state, mu_w) + mu_b
-        log_sigma_sq = tf.matmul(encoder_final_state, sigma_w) + sigma_b
+        mu = tf.matmul(encoder_final_state, mu_w) + mu_b + mu_delta
+        log_sigma_sq = tf.matmul(encoder_final_state, sigma_w) + sigma_b + log_sigma_sq_delta
         eps = tf.random_normal(shape=tf.shape(log_sigma_sq), mean=0, stddev=1, dtype=tf.float32)
 
         if args.eval:
-            z = tf.zeros(shape=(args.batch_size, args.rnn_size), dtype=tf.float32)
+            # z = tf.zeros(shape=(args.batch_size, args.rnn_size), dtype=tf.float32)
+            z = mu_delta
         else:
             # Re-parameterization trick
             z = mu + tf.sqrt(tf.exp(log_sigma_sq)) * eps
@@ -223,12 +229,8 @@ if __name__ == '__main__':
                         help='size of negative sampling')
     parser.add_argument('--num_epochs', type=int, default=50,
                         help='number of epochs')
-    parser.add_argument('--grad_clip', type=float, default=10.,
-                        help='clip gradients at this value')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--decay_rate', type=float, default=1.,
-                        help='decay of learning rate')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='minibatch size')
     parser.add_argument('--model_id', type=str, default="",
