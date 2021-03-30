@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 import pickle
@@ -230,6 +231,7 @@ class DataGenerator:
                 gy.append(int(p // map_size[1]))
                 gx.append(int(p % map_size[1]))
         plt.plot(gx, gy, color=c, linestyle=ls, lw=lw, alpha=alpha)
+        plt.show()
 
     def visualize_outlier_example(self, num, defult_idx=None):
         outlier_items = list(self.outliers.items())
@@ -281,3 +283,56 @@ class DataGenerator:
         model_dir = self.make_model_dir()
         with open(model_dir + 'sd_clusters.pkl', 'rb') as fp:
             self.kmeans, self.traj_sd_cluster, self.val_traj_sd_cluster = pickle.load(fp, encoding='latin1')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_filename', type=str, default="../data/processed_porto{}.csv",
+                        help='data file')
+    parser.add_argument('--map_size', type=tuple, default=(100, 100),
+                        help='size of map')
+
+    # parser.add_argument('--data_filename', type=str, default="../data/processed_beijing{}.csv",
+    #                     help='data file')
+    # parser.add_argument('--map_size', type=tuple, default=(130, 130),
+    #                     help='size of map')
+
+    parser.add_argument('--model_type', type=str, default="sd",
+                        help='choose a model')
+
+    parser.add_argument('--x_latent_size', type=int, default=32,
+                        help='size of input embedding')
+    parser.add_argument('--rnn_size', type=int, default=256,
+                        help='size of RNN hidden state')
+    parser.add_argument('--mem_num', type=int, default=5,
+                        help='size of sd memory')
+
+    parser.add_argument('--neg_size', type=int, default=64,
+                        help='size of negative sampling')
+    parser.add_argument('--num_epochs', type=int, default=20,
+                        help='number of epochs')
+    parser.add_argument('--grad_clip', type=float, default=10.,
+                        help='clip gradients at this value')
+    parser.add_argument('--learning_rate', type=float, default=0.001,
+                        help='learning rate')
+    parser.add_argument('--decay_rate', type=float, default=1.,
+                        help='decay of learning rate')
+    parser.add_argument('--batch_size', type=int, default=128,
+                        help='minibatch size')
+
+    parser.add_argument('--model_id', type=str, default="",
+                        help='model id')
+    parser.add_argument('--partial_ratio', type=float, default=1.0,
+                        help='partial trajectory evaluation')
+    parser.add_argument('--eval', type=bool, default=False,
+                        help='partial trajectory evaluation')
+    parser.add_argument('--pt', type=bool, default=False,
+                        help='partial trajectory evaluation')
+
+    parser.add_argument('--gpu_id', type=str, default="0")
+    args = parser.parse_args()
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+
+    sampler = DataGenerator(args)
+    sampler.visualize(sampler.val_trajectories[0], 'black')

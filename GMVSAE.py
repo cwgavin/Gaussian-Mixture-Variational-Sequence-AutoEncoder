@@ -169,8 +169,13 @@ class Model:
         if args.eval:
             results = tf.map_fn(fn=generation, elems=tf.stack([mu_c] * args.batch_size, axis=1),
                                 dtype=(tf.float32, tf.float32, tf.float32, tf.float32),
-                                parallel_iterations=args.mem_num)
-            self.batch_likelihood = tf.reduce_max(results[3], axis=0)
+                                parallel_iterations=args.mem_num)   # results.shape=(10, 128)
+            # results = my_map(fn=generation,
+            #                  elems=tf.stack([mu_c] * args.batch_size, axis=1),
+            #                  dtype=(tf.float32, tf.float32, tf.float32, tf.float32),
+            #                  parallel_iterations=args.mem_num)
+
+            self.batch_likelihood = tf.reduce_max(results[3], axis=0)  # batch_likelihood.shape=(128,)
         else:
             results = generation(z)
             self.batch_likelihood = results[-1]
